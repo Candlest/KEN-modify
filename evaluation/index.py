@@ -7,6 +7,7 @@ from gpttrace import simple_examples, get_top_n_example_from_bpftrace_vec_db
 from langchain.chat_models import ChatOpenAI
 from langchain.llms import CTransformers
 from chain import run_gpt_for_bpftrace_progs, run_code_llama_for_prog, run_gpt_for_libbpf_progs
+from ken.verifier import run_bpftrace_verifier
 
 app = Flask(__name__)
 CORS(app)
@@ -53,7 +54,7 @@ def normalize_api_base(api_base: str) -> str:
     return f"{api_base}/v1"
 
 
-def handler(user_query, additional_contex, bpf_type, model, api_key, api_base):
+def handler(user_query, additional_contex, bpf_type, model, api_key, api_base, enable_verifier=True):
     if os.getenv("OPENAI_API_KEY", api_key) is None:
         print(
             "Either provide your access token through `-k` or through environment variable `OPENAI_API_KEY`")
@@ -70,6 +71,9 @@ def handler(user_query, additional_contex, bpf_type, model, api_key, api_base):
             result = run_code_llama_for_prog(llm_input)
         else:
             result = run_gpt_for_bpftrace_progs(llm_input, model, api_key=api_key, api_base=api_base)
+        if enable_verifier:
+            verifier_context = additional_contex or user_query
+            result = run_bpftrace_verifier(verifier_context, result)
     elif bpf_type == "libbpf":
         if model == "code-llama":
             result = run_code_llama_for_prog(llm_input)
@@ -96,7 +100,8 @@ def post_json_data():
         api_key = json_data.get('apiKey', '')
         api_base = normalize_api_base(json_data.get('apiBase', os.getenv('OPENAI_API_BASE', '')))
 
-        result = handler(user_query, additional_context, bpf_type, model, api_key, api_base)
+        enable_verifier = json_data.get('enableVerifier', True)
+        result = handler(user_query, additional_context, bpf_type, model, api_key, api_base, enable_verifier)
         return Response(result, headers={ "Cache-Control": "no-cache" })
     else:
         return jsonify({'error': '无效的JSON数据'}), 400

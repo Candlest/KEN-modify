@@ -352,7 +352,7 @@ use function to run the bpftrace program without any assume or assert statments.
 def compile_bpftrace_with_retry(context, program, retry_depth=3):
     print("compile_bpftrace_with_retry")
     var = compile_bpftrace_for_llvm(program)
-    # print(var)
+    print("bpftrace -d 输出：", var)
     # parce from the normal function to result
     if var.returncode != 0:
         print("\nvar.stderr: ", var.stderr)
@@ -550,7 +550,7 @@ def parse_libbpf_program(context: str, program: str):
     #     pass
     return program
 
-
+# 入口函数
 # extract all the function calls
 # prompt from the vectordb and gen
 def run_bpftrace_verifier(context: str, program: str) -> str:

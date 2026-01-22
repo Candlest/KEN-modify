@@ -1,31 +1,14 @@
 import json
+import os
 import re
 from typing import Callable, Optional
 import time
 import gpttrace
 import smtdriver
 import requests
-from langchain.chains import LLMChain
-from langchain.chains.openai_functions import create_openai_fn_chain
-from langchain.chat_models import ChatOpenAI
 from langchain.llms import DeepInfra, HuggingFaceHub
-from langchain.prompts import (
-    ChatPromptTemplate,
-    HumanMessagePromptTemplate,
-    PromptTemplate,
-)
-from langchain.prompts.chat import ChatPromptTemplate, HumanMessagePromptTemplate
-from langchain.schema import HumanMessage, SystemMessage
 import unittest
 # from transformers import pipeline
-
-message_prompt = HumanMessagePromptTemplate(
-    prompt=PromptTemplate(
-        template="{input}",
-        input_variables=["input"],
-    )
-)
-prompt_template = ChatPromptTemplate.from_messages([message_prompt])
 
 model = "code-llama"  # can be "code-llama" or "gpt-3.5-turbo" or "gpt-3.5-turbo-16k"
 local_code_llama = True
@@ -79,17 +62,68 @@ def bpftrace_get_hooks(regex: str) -> str:
     return f"{regex}"
 
 
-def ask_gpt_for_question(input: str, model_name: str) -> str:
-    llm = ChatOpenAI(model=model_name, temperature=0)
-    return llm.predict(input)
+def normalize_api_base(api_base: Optional[str]) -> Optional[str]:
+    if not api_base:
+        return api_base
+    api_base = api_base.rstrip("/")
+    if api_base.endswith("/chat/completions"):
+        api_base = api_base[: -len("/chat/completions")]
+    if api_base.endswith("/v1"):
+        return api_base
+    return f"{api_base}/v1"
 
 
-def run_gpt_for_bpftrace_hooks(input: str, model_name: str) -> str:
-    # If we pass in a model explicitly, we need to make sure it supports the OpenAI function-calling API.
-    llm = ChatOpenAI(model=model_name, temperature=0)
-    chain = create_openai_fn_chain(
-        [bpftrace_get_hooks], llm, prompt_template, verbose=False
-    )
+def call_chat_completion(
+    prompt: str,
+    model_name: str,
+    api_key: Optional[str] = None,
+    api_base: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+) -> str:
+    api_key = api_key or os.getenv("OPENAI_API_KEY")
+    api_base = normalize_api_base(api_base or os.getenv("OPENAI_API_BASE"))
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for chat completions.")
+    if not api_base:
+        raise RuntimeError("OPENAI_API_BASE is required for chat completions.")
+    url = f"{api_base}/chat/completions"
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    payload = {
+        "model": model_name,
+        "temperature": 0,
+        "messages": messages,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    response = requests.post(url, headers=headers, json=payload, timeout=120)
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"chat completion failed: {response.status_code} {response.text}"
+        )
+    data = response.json()
+    return data["choices"][0]["message"]["content"]
+
+
+def ask_gpt_for_question(
+    input: str,
+    model_name: str,
+    api_key: Optional[str] = None,
+    api_base: Optional[str] = None,
+) -> str:
+    return call_chat_completion(input, model_name, api_key=api_key, api_base=api_base)
+
+
+def run_gpt_for_bpftrace_hooks(
+    input: str,
+    model_name: str,
+    api_key: Optional[str] = None,
+    api_base: Optional[str] = None,
+) -> str:
     full_prompt = f"""
     Find possoble hook points for {input}
 
@@ -131,34 +165,39 @@ def run_gpt_for_bpftrace_hooks(input: str, model_name: str) -> str:
                 7. tcp related kprobes:
                 kprobe:tcp_*
 """
-    res = chain.run(full_prompt)
-    print(res)
-    prog = res["regex"]
-    return prog
-
-
-def run_gpt_for_bpftrace_progs(input: str, model_name: str) -> str:
-    # If we pass in a model explicitly, we need to make sure it supports the OpenAI function-calling API.
-    llm = ChatOpenAI(model=model_name, temperature=0)
-    chain = create_openai_fn_chain(
-        [run_bpftrace_prog_with_func_call_define], llm, prompt_template, verbose=False
+    system_prompt = (
+        "You are a kernel tracing expert. Output ONLY one regex pattern line, "
+        "no explanations."
     )
-    res = chain.run(input)
-    print(res)
-    prog = res["prog"]
-    return prog
-
-
-def run_gpt_for_libbpf_progs(input: str, model_name: str) -> str:
-    # If we pass in a model explicitly, we need to make sure it supports the OpenAI function-calling API.
-    llm = ChatOpenAI(model=model_name, temperature=0)
-    chain = create_openai_fn_chain(
-        [run_libbpf_prog_with_func_call_define], llm, prompt_template, verbose=False
+    res = call_chat_completion(
+        full_prompt,
+        model_name,
+        api_key=api_key,
+        api_base=api_base,
+        system_prompt=system_prompt,
     )
-    res = chain.run(input)
-    print(res)
-    prog = res["prog"]
-    return prog
+    res = res.strip().splitlines()[0]
+    return res
+
+
+def run_gpt_for_bpftrace_progs(
+    input: str,
+    model_name: str,
+    api_key: Optional[str] = None,
+    api_base: Optional[str] = None,
+) -> str:
+    res = call_chat_completion(input, model_name, api_key=api_key, api_base=api_base)
+    return extract_code_blocks(res)
+
+
+def run_gpt_for_libbpf_progs(
+    input: str,
+    model_name: str,
+    api_key: Optional[str] = None,
+    api_base: Optional[str] = None,
+) -> str:
+    res = call_chat_completion(input, model_name, api_key=api_key, api_base=api_base)
+    return extract_code_blocks(res)
 
 
 def extract_code_blocks(text: str) -> str:

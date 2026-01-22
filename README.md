@@ -1,3 +1,56 @@
+进行的修改：
+
+增加第三方 api 支持，需要设置环境变量：
+
+```bash
+export OPENAI_API_KEY="<你的 key>" # 例如 "sk-xxx"
+export OPENAI_EMBEDDINGS_MODEL="text-embedding-ada-002" # 原论文默认的 vec_db 嵌入模型，维度 1536
+export OPENAI_API_BASE="<你的中转站 api 接口>" # 例如 "https://yunwu.ai/v1"
+```
+
+使用样例：
+
+```bash
+curl -X POST http://localhost:4000/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userInput": "统计每秒新建进程数",
+    "bpfType": "bpftrace",
+    "model": "gpt-5.1"
+  }'
+```
+
+样例返回结果：
+
+```js
+BEGIN
+{
+	printf("Tracing new processes... Hit Ctrl-C to end.\n");
+}
+
+tracepoint:sched:sched_process_fork
+{
+	@newprocs = count();
+}
+
+interval:s:1
+{
+	time("%H:%M:%S New processes/sec: ");
+	print(@newprocs);
+	clear(@newprocs);
+}
+
+END
+{
+	clear(@newprocs);
+}
+```
+
+保存为 `*.bt` 文件，使用 `bpftrace` 执行。
+
+---
+README 原文
+
 # Kgent: Kernel Extensions Large Language Model Agent
 
 This repository contains the code and evaluation for the paper [Kgent: Kernel Extensions Large Language Model Agent](https://dl.acm.org/doi/10.1145/3672197.3673434).

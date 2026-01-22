@@ -1,3 +1,4 @@
+import json
 import os
 
 from flask import Flask, jsonify, request, Response
@@ -35,27 +36,47 @@ def get_llm(model_name):
                 model_type='llama',
                 config={'max_new_tokens': 256,
                         'temperature': 0})
-    if model_name == "gpt-3.5-turbo" or model_name == "gpt-4":
+    elif model_name == "gpt-3.5-turbo" or model_name == "gpt-4":
         llm = ChatOpenAI(temperature=0, model_name=model_name)
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
     return llm
 
-def handler(user_query, additional_contex, bpf_type, model, api_key):
-    if os.getenv('OPENAI_API_KEY', api_key) is None:
+def normalize_api_base(api_base: str) -> str:
+    if not api_base:
+        return api_base
+    api_base = api_base.rstrip("/")
+    if api_base.endswith("/chat/completions"):
+        api_base = api_base[: -len("/chat/completions")]
+    if api_base.endswith("/v1"):
+        return api_base
+    return f"{api_base}/v1"
+
+
+def handler(user_query, additional_contex, bpf_type, model, api_key, api_base):
+    if os.getenv("OPENAI_API_KEY", api_key) is None:
         print(
             "Either provide your access token through `-k` or through environment variable `OPENAI_API_KEY`")
         return
+
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+    if api_base:
+        os.environ["OPENAI_API_BASE"] = api_base
     
     llm_input = prompt(user_query)
     if bpf_type == "bpftrace":
         if model == "code-llama":
-            result =  run_code_llama_for_prog(llm_input)
-        elif model == "gpt-4" or model == "gpt-3.5-turbo" or model == "gpt-3.5-turbo-16k":
-            result =  run_gpt_for_bpftrace_progs(llm_input, model)
+            result = run_code_llama_for_prog(llm_input)
+        else:
+            result = run_gpt_for_bpftrace_progs(llm_input, model, api_key=api_key, api_base=api_base)
     elif bpf_type == "libbpf":
         if model == "code-llama":
-            result =  run_code_llama_for_prog(llm_input)
-        elif model == "gpt-4" or model == "gpt-3.5-turbo" or model == "gpt-3.5-turbo-16k":
-            result =  run_gpt_for_libbpf_progs(llm_input, model)
+            result = run_code_llama_for_prog(llm_input)
+        else:
+            result = run_gpt_for_libbpf_progs(llm_input, model, api_key=api_key, api_base=api_base)
+    else:
+        return json.dumps({"error": "Invalid bpfType"})
     # llm = get_llm(model)
     # result = llm.predict(prompt(user_query))
     return result
@@ -73,8 +94,9 @@ def post_json_data():
         bpf_type = json_data.get('bpfType', '')
         model = json_data.get('model', 'gpt-3.5-turbo')
         api_key = json_data.get('apiKey', '')
+        api_base = normalize_api_base(json_data.get('apiBase', os.getenv('OPENAI_API_BASE', '')))
 
-        result = handler(user_query, additional_context, bpf_type, model, api_key)
+        result = handler(user_query, additional_context, bpf_type, model, api_key, api_base)
         return Response(result, headers={ "Cache-Control": "no-cache" })
     else:
         return jsonify({'error': '无效的JSON数据'}), 400

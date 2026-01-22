@@ -1,6 +1,8 @@
 from langchain.tools import StructuredTool
 import subprocess
 import json
+import shutil
+import time
 import unittest
 import argparse
 
@@ -8,9 +10,10 @@ from typing import List, TypedDict
 from typing import Optional
 
 import os
+from pathlib import Path
 from langchain.document_loaders import JSONLoader
 from langchain.vectorstores import FAISS
-from langchain.embeddings.openai import OpenAIEmbeddings
+import requests
 from langchain.agents import Tool
 from langchain.agents import AgentType
 from langchain.memory import ConversationBufferMemory
@@ -132,54 +135,156 @@ LIBBPF_BASIC_EXAMPLE = """
     ```
     """
 
+ROOT_DIR = Path(__file__).resolve().parents[1]
+DATASET_DIR = ROOT_DIR / "dataset"
+
+
+class YunwuEmbeddings:
+    def __init__(self, api_key: str, api_base: str, model: str, timeout_s: int = 60):
+        self.api_key = api_key
+        self.api_base = api_base.rstrip("/")
+        self.model = model
+        self.timeout_s = timeout_s
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        url = f"{self.api_base}/embeddings"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "input": texts,
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=self.timeout_s)
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"embeddings request failed: {response.status_code} {response.text}"
+            )
+        data = response.json()
+        return [item["embedding"] for item in data["data"]]
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed([text])[0]
+
+
+def build_openai_embeddings() -> YunwuEmbeddings:
+    api_key = os.getenv("OPENAI_API_KEY")
+    api_base = os.getenv("OPENAI_API_BASE")
+    model_name = os.getenv("OPENAI_EMBEDDINGS_MODEL", "text-embedding-3-large")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is required for embeddings. Set it in the request or environment."
+        )
+    if not api_base:
+        raise RuntimeError(
+            "OPENAI_API_BASE is required for embeddings. It should end with /v1."
+        )
+    return YunwuEmbeddings(api_key=api_key, api_base=api_base, model=model_name)
+
+
+def vector_db_search_with_retry(db: FAISS, query: str, attempts: int = 3) -> list:
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return db.search(query, search_type="similarity")
+        except Exception as exc:
+            last_exc = exc
+            sleep_s = 1.5 * attempt
+            print(f"embeddings service unavailable, retrying in {sleep_s}s... ({attempt}/{attempts})")
+            time.sleep(sleep_s)
+    if last_exc is not None:
+        raise last_exc
+    return []
+
+
+def rebuild_libbpf_vector_db(embeddings: YunwuEmbeddings) -> FAISS:
+    data_dir = Path("./data_save_libbpf")
+    if data_dir.exists():
+        shutil.rmtree(data_dir)
+    loader = JSONLoader(
+        file_path=str(DATASET_DIR / "libbpf" / "examples.json"),
+        jq_schema=".data[].content",
+        json_lines=True,
+    )
+    documents = loader.load()
+    db = FAISS.from_documents(documents, embeddings)
+    db.save_local("./data_save_libbpf", index_name="vector_db")
+    return db
+
+
+def rebuild_bpftrace_vector_db(embeddings: YunwuEmbeddings) -> FAISS:
+    data_dir = Path("./data_save")
+    if data_dir.exists():
+        shutil.rmtree(data_dir)
+    loader = JSONLoader(
+        file_path=str(DATASET_DIR / "bpftrace" / "examples.json"),
+        jq_schema=".data[].content",
+        json_lines=True,
+    )
+    documents = loader.load()
+    db = FAISS.from_documents(documents, embeddings)
+    db.save_local("./data_save", index_name="vector_db")
+    return db
+
+
 def get_top_n_example_from_libbpf_vec_db(query: str, n: int = 2) -> str:
-    embeddings = OpenAIEmbeddings()
+    embeddings = build_openai_embeddings()
     # Check if the vector database files exist
     if not (
         os.path.exists("./data_save_libbpf/vector_db.faiss")
         and os.path.exists("./data_save_libbpf/vector_db.pkl")
     ):
-        loader = JSONLoader(
-            file_path="../dataset/libbpf/examples.json",
-            jq_schema=".data[].content",
-            json_lines=True,
-        )
-        documents = loader.load()
-        db = FAISS.from_documents(documents, embeddings)
-        db.save_local("./data_save_libbpf", index_name="vector_db")
+        db = rebuild_libbpf_vector_db(embeddings)
     else:
         # Load an existing FAISS vector store
         db = FAISS.load_local(
             "./data_save_libbpf", index_name="vector_db", embeddings=embeddings
         )
 
-    results = db.search(query, search_type="similarity")
+    try:
+        results = vector_db_search_with_retry(db, query)
+    except AssertionError:
+        db = rebuild_libbpf_vector_db(embeddings)
+        results = vector_db_search_with_retry(db, query)
+    except Exception as exc:
+        raise RuntimeError(
+            "Vector DB search failed when calling embeddings. "
+            "Verify OPENAI_API_BASE points to the provider /v1 endpoint and "
+            "OPENAI_EMBEDDINGS_MODEL is supported."
+        ) from exc
     results = [result.page_content for result in results]
     return "\n".join(results[:n])
 
 
 def get_top_n_example_from_bpftrace_vec_db(query: str, n: int = 2) -> str:
-    embeddings = OpenAIEmbeddings()
+    embeddings = build_openai_embeddings()
     # Check if the vector database files exist
     if not (
         os.path.exists("./data_save/vector_db.faiss")
         and os.path.exists("./data_save/vector_db.pkl")
     ):
-        loader = JSONLoader(
-            file_path="../dataset/bpftrace/examples.json",
-            jq_schema=".data[].content",
-            json_lines=True,
-        )
-        documents = loader.load()
-        db = FAISS.from_documents(documents, embeddings)
-        db.save_local("./data_save", index_name="vector_db")
+        db = rebuild_bpftrace_vector_db(embeddings)
     else:
         # Load an existing FAISS vector store
         db = FAISS.load_local(
             "./data_save", index_name="vector_db", embeddings=embeddings
         )
 
-    results = db.search(query, search_type="similarity")
+    try:
+        results = vector_db_search_with_retry(db, query)
+    except AssertionError:
+        db = rebuild_bpftrace_vector_db(embeddings)
+        results = vector_db_search_with_retry(db, query)
+    except Exception as exc:
+        raise RuntimeError(
+            "Vector DB search failed when calling embeddings. "
+            "Verify OPENAI_API_BASE points to the provider /v1 endpoint and "
+            "OPENAI_EMBEDDINGS_MODEL is supported."
+        ) from exc
     results = [result.page_content for result in results]
     return "\n".join(results[:n])
 

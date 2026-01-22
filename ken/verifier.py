@@ -3,9 +3,9 @@ from typing import TypedDict
 from z3 import *
 import os, re, json, shutil
 import subprocess
-from z3_vector_db.z3_conditions_for_ebpf import generate_response
-from z3_vector_db.z3_conditions_for_ebpf import run_gpt_for_bpftrace_func
-from z3_vector_db.z3_conditions_for_ebpf import run_code_llama_for_prog
+from .z3_vector_db.z3_conditions_for_ebpf import generate_response
+from .z3_vector_db.z3_conditions_for_ebpf import run_gpt_for_bpftrace_func
+from .z3_vector_db.z3_conditions_for_ebpf import run_code_llama_for_prog
 
 model = "gpt-4"  # can be "code-llama"
 

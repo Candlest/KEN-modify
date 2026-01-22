@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 
 from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
@@ -7,6 +8,9 @@ from gpttrace import simple_examples, get_top_n_example_from_bpftrace_vec_db
 from langchain.chat_models import ChatOpenAI
 from langchain.llms import CTransformers
 from chain import run_gpt_for_bpftrace_progs, run_code_llama_for_prog, run_gpt_for_libbpf_progs
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from ken.verifier import run_bpftrace_verifier
 
 app = Flask(__name__)

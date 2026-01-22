@@ -14,14 +14,17 @@ model = "code-llama"  # can be "code-llama" or "gpt-3.5-turbo" or "gpt-3.5-turbo
 local_code_llama = True
 
 API_URL = "https://vbvhusef1oe4a22d.us-east-1.aws.endpoints.huggingface.cloud"
-headers = {
-    "Authorization": "Bearer REDACTED",
-    "Content-Type": "application/json"
-}
 
 def query_endpoint(input: str):
     # set inpu to be last 1000
     input = input[-1000:]
+    hf_token = os.getenv("HUGGINGFACE_TOKEN")
+    if not hf_token:
+        raise RuntimeError("HUGGINGFACE_TOKEN is required for Hugging Face API access.")
+    headers = {
+        "Authorization": f"Bearer {hf_token}",
+        "Content-Type": "application/json",
+    }
     response = requests.post(API_URL, headers=headers, json={
         "inputs": input,
         "parameters": {

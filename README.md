@@ -1,12 +1,19 @@
 进行的修改：
 
-增加第三方 api 支持，需要设置环境变量：
+## 安装环境
+
+使用 mamba/conda：
 
 ```bash
-export OPENAI_API_KEY="<你的 key>" # 例如 "sk-xxx"
-export OPENAI_EMBEDDINGS_MODEL="text-embedding-ada-002" # 原论文默认的 vec_db 嵌入模型，维度 1536
-export OPENAI_API_BASE="<你的中转站 api 接口>" # 例如 "https://yunwu.ai/v1"
+mamba env create -f env.yml
+mamba activate kernel_ken
 ```
+
+## 快速上手
+
+增加第三方 api 支持，需要设置环境变量（可写到 `.env`，参考 `.env.example`）；
+
+修复了硬编码的 hugface token，现在放在 `.env` 文件中（见 `.env.example`）；
 
 使用样例：
 

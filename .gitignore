@@ -17,3 +17,4 @@ huggingface_hub
 evaluation/models/*
 pixel-kernel
 magic-trace
+.env

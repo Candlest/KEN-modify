@@ -1,13 +1,46 @@
 # https://github.com/shilch/seccomp/blob/master/extract_syscalls.sh
 from typing import TypedDict
 from z3 import *
-import os, re, json
+import os, re, json, shutil
 import subprocess
 from z3_vector_db.z3_conditions_for_ebpf import generate_response
 from z3_vector_db.z3_conditions_for_ebpf import run_gpt_for_bpftrace_func
 from z3_vector_db.z3_conditions_for_ebpf import run_code_llama_for_prog
 
 model = "gpt-4"  # can be "code-llama"
+
+
+def get_sea_bin() -> str:
+    sea_bin = os.getenv("SEA_BIN")
+    if sea_bin:
+        return sea_bin
+    return "z3_vector_db/seahorn/bin/sea"
+
+
+def get_bpftrace_bin() -> str:
+    bpftrace_bin = os.getenv("BPFTRACE_BIN")
+    if bpftrace_bin:
+        return bpftrace_bin
+    system_bpftrace = shutil.which("bpftrace")
+    if system_bpftrace:
+        return system_bpftrace
+    return "z3_vector_db/bpftrace/bpftrace"
+
+
+def get_z3_bin() -> str:
+    z3_bin = os.getenv("Z3_BIN")
+    if z3_bin:
+        return z3_bin
+    system_z3 = shutil.which("z3")
+    if system_z3:
+        return system_z3
+    return "z3"
+
+
+def ensure_tmp_dir() -> str:
+    tmp_dir = os.path.abspath("tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    return tmp_dir
 
 # prompt what should be changed
 def replace_bpftrace_sassert_func_to_error(program: str):
@@ -256,14 +289,20 @@ def verify_z3(program) -> str:
     return error string or empty str.
     """
     print("\nstart verify with z3: \n")
-    with open("/tmp/tmp.ll", "w") as f:
+    tmp_dir = ensure_tmp_dir()
+    ll_path = os.path.join(tmp_dir, "tmp.ll")
+    smt_path = os.path.join(tmp_dir, "tmp.smt2")
+    with open(ll_path, "w") as f:
         f.write(program)
-    os.system("z3_vector_db/seahorn/bin/sea smt /tmp/tmp.ll -o /tmp/tmp.smt2")
+    sea_bin = get_sea_bin()
+    sea_cmd = [sea_bin, "smt", ll_path, "-o", smt_path]
+    subprocess.run(sea_cmd, text=True, capture_output=True)
     try:
+        z3_bin = get_z3_bin()
         sat = subprocess.run(
             [
-                "z3",
-                "/tmp/tmp.smt2",
+                z3_bin,
+                smt_path,
             ],
             text=True,
             capture_output=True,
@@ -282,15 +321,18 @@ def get_linenumber(output_string: str):
 
 
 def compile_bpftrace_for_llvm(program: str):
-    with open("/tmp/tmp.bt", "w") as f:
+    tmp_dir = ensure_tmp_dir()
+    bt_path = os.path.join(tmp_dir, "tmp.bt")
+    with open(bt_path, "w") as f:
         f.write(program)
     # try:
+    bpftrace_bin = get_bpftrace_bin()
     var = subprocess.run(
         [
             "sudo",
-            "z3_vector_db/bpftrace/bpftrace",
+            bpftrace_bin,
             "-d",
-            "/tmp/tmp.bt",
+            bt_path,
         ],
         text=True,
         capture_output=True,

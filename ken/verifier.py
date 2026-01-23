@@ -5,6 +5,7 @@ import os, re, json, shutil, shlex
 import subprocess
 from .z3_vector_db.z3_conditions_for_ebpf import generate_response
 from .z3_vector_db.z3_conditions_for_ebpf import run_gpt_for_bpftrace_func
+from .z3_vector_db.z3_conditions_for_ebpf import run_gpt_for_libbpf_func
 from .z3_vector_db.z3_conditions_for_ebpf import run_code_llama_for_prog
 
 model = os.getenv("VERIFIER_MODEL", "gpt-4")
@@ -70,6 +71,13 @@ def get_libbpf_include_dirs() -> list:
         if path and path not in unique_dirs and os.path.isdir(path):
             unique_dirs.append(path)
     return unique_dirs
+
+
+def has_vmlinux_header(include_dirs: list) -> bool:
+    for include_dir in include_dirs:
+        if os.path.exists(os.path.join(include_dir, "vmlinux.h")):
+            return True
+    return False
 
 
 def ensure_tmp_dir() -> str:
@@ -499,6 +507,11 @@ or remove assume statement. only do mininium modification if required.
 We are going to use smt tools to verify the code, so please
 REMEMBER to keep the assume or assert statement to make sure it can be verified.
 If assume statement exists, do not change it to if or other statements.
+
+Compiler hints for bpftrace:
+- There is no builtin "ppid" variable. Use args->parent_pid for sched_process_fork, or remove ppid column.
+- Do not call str() on a value that is already a string (string[16]); use args->child_comm directly.
+- Keep bpftrace DSL syntax (BEGIN/END, tracepoint:..., kprobe:...).
 """
     print("\nretry_generate_bpftrace_program_for_compile: \n", retry_prompt)
     response = ""
@@ -520,6 +533,10 @@ has sat error. if the error is related to the program itself, please fix it.
 {error}
 
 use function to run the bpftrace program without any assume or assert statments.
+
+Compiler hints for bpftrace:
+- There is no builtin "ppid" variable. Use args->parent_pid for sched_process_fork, or remove ppid column.
+- Do not call str() on a value that is already a string (string[16]); use args->child_comm directly.
 """
     print("\nretry_generate_bpftrace_program_for_sat\n", retry_prompt)
     response = ""
@@ -547,7 +564,7 @@ if they exist.
     if model == "code-llama":
         response = run_code_llama_for_prog(retry_prompt)
     else:
-        response = run_gpt_for_bpftrace_func(retry_prompt, model)
+        response = run_gpt_for_libbpf_func(retry_prompt, model)
     return response
 
 
@@ -568,7 +585,7 @@ Keep the program behavior and do not remove assume or sassert statements.
     if model == "code-llama":
         response = run_code_llama_for_prog(retry_prompt)
     else:
-        response = run_gpt_for_bpftrace_func(retry_prompt, model)
+        response = run_gpt_for_libbpf_func(retry_prompt, model)
     return response
 
 
@@ -583,7 +600,15 @@ def compile_bpftrace_with_retry(context, program, retry_depth=3):
         if retry_depth <= 0:
             print("\nfailed to compile bpftrace program with retry.\n")
             return "", program
+        previous_program = program
         program = retry_generate_bpftrace_program_for_compile(program, var.stderr)
+        if not program.strip():
+            print("\nretry returned empty program, keeping previous\n")
+            return compile_bpftrace_with_retry(
+                context,
+                previous_program,
+                retry_depth - 1,
+            )
         print("\nregenerated program:\n", program)
         return compile_bpftrace_with_retry(
             context,
@@ -604,6 +629,9 @@ def compile_libbpf_with_retry(context, program, retry_depth=3):
     if var.returncode != 0:
         print("\nvar.stderr: ", var.stderr)
         print("\nretry left: ", retry_depth)
+        if "vmlinux.h" in var.stderr and not has_vmlinux_header(get_libbpf_include_dirs()):
+            print("\nmissing vmlinux.h; set VMLINUX_H_PATH or add include path.\n")
+            return "", program
         if retry_depth <= 0:
             print("\nfailed to compile libbpf program with retry.\n")
             return "", program

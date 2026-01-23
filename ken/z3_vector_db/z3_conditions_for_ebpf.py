@@ -69,6 +69,15 @@ def run_bpftrace_prog_with_func_call_define(prog: str) -> str:
     return f"{prog}"
 
 
+def run_libbpf_prog_with_func_call_define(prog: str) -> str:
+    """Runs a libbpf C program. Output only kernel eBPF C code.
+
+    Args:
+                    prog: The libbpf program to run.
+    """
+    return f"{prog}"
+
+
 def get_chat_completion_url() -> str:
     api_base = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
     api_base = api_base.rstrip("/")
@@ -79,15 +88,30 @@ def get_chat_completion_url() -> str:
     return f"{api_base}/v1/chat/completions"
 
 
-def call_tools_chat_completion(messages, model_name: str) -> str:
+def get_zhipu_chat_completion_url() -> str:
+    api_base = os.getenv("ZHIPU_API_BASE", "https://open.bigmodel.cn/api/paas/v4")
+    api_base = api_base.rstrip("/")
+    return f"{api_base}/chat/completions"
+
+
+def should_use_zhipu(model_name: str) -> bool:
+    provider = os.getenv("LLM_PROVIDER", "").lower()
+    if provider == "zhipu":
+        return True
+    if model_name.startswith("glm-"):
+        return True
+    return bool(os.getenv("ZHIPU_API_BASE"))
+
+
+def call_tools_chat_completion(messages, model_name: str, tool_name: str, tool_description: str) -> str:
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required for tool calls")
     tool = {
         "type": "function",
         "function": {
-            "name": "run_bpftrace_prog_with_func_call_define",
-            "description": "Return the bpftrace program text.",
+            "name": tool_name,
+            "description": tool_description,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -101,7 +125,7 @@ def call_tools_chat_completion(messages, model_name: str) -> str:
         "model": model_name,
         "messages": messages,
         "tools": [tool],
-        "tool_choice": {"type": "function", "function": {"name": "run_bpftrace_prog_with_func_call_define"}},
+        "tool_choice": {"type": "function", "function": {"name": tool_name}},
         "temperature": 0,
         "max_tokens": 2048,
         "stream": False,
@@ -142,15 +166,125 @@ def call_tools_chat_completion(messages, model_name: str) -> str:
         return args.get("prog", "")
     return message.get("content", "")
 
+
+def call_zhipu_tools_chat_completion(messages, model_name: str, tool_name: str, tool_description: str) -> str:
+    api_key = os.getenv("ZHIPU_API_KEY") or os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("ZHIPU_API_KEY is required for Zhipu tool calls")
+    tool = {
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "description": tool_description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prog": {"type": "string"},
+                },
+                "required": ["prog"],
+            },
+        },
+    }
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "tools": [tool],
+        "tool_choice": "auto",
+        "temperature": 0,
+        "max_tokens": 2048,
+        "stream": False,
+        "thinking": {"type": "enabled"},
+    }
+    request = urllib.request.Request(
+        get_zhipu_chat_completion_url(),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    attempts = 0
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {429, 500, 502, 503, 504} or attempts >= 4:
+                raise
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            delay = float(retry_after) if retry_after else 1.5 * (2 ** attempts)
+            time.sleep(delay)
+            attempts += 1
+    message = data.get("choices", [{}])[0].get("message", {})
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        arguments = tool_calls[0].get("function", {}).get("arguments", "{}")
+        args = json.loads(arguments)
+        return args.get("prog", "")
+    function_call = message.get("function_call")
+    if function_call:
+        arguments = function_call.get("arguments", "{}")
+        args = json.loads(arguments)
+        return args.get("prog", "")
+    return message.get("content", "")
+
 def run_gpt_for_bpftrace_func(input: str, model_name: str) -> str:
     # If we pass in a model explicitly, we need to make sure it supports the OpenAI function-calling API.
     llm = ChatOpenAI(model=model_name, temperature=0)
+    if should_use_zhipu(model_name):
+        messages = [{"role": "user", "content": input}]
+        return call_zhipu_tools_chat_completion(
+            messages,
+            model_name,
+            "run_bpftrace_prog_with_func_call_define",
+            "Return only the bpftrace program text.",
+        )
     api_base = os.getenv("OPENAI_API_BASE", "")
     if api_base and "openai.com" not in api_base:
         messages = [{"role": "user", "content": input}]
-        return call_tools_chat_completion(messages, model_name)
+        return call_tools_chat_completion(
+            messages,
+            model_name,
+            "run_bpftrace_prog_with_func_call_define",
+            "Return only the bpftrace program text.",
+        )
     chain = create_openai_fn_chain(
         [run_bpftrace_prog_with_func_call_define], llm, prompt_template, verbose=False
+    )
+    res = chain.run(input)
+    print(res)
+    if isinstance(res, dict) and "prog" in res:
+        return res["prog"]
+    if hasattr(res, "get"):
+        prog = res.get("prog")
+        return prog if prog is not None else str(res)
+    return str(res)
+
+
+def run_gpt_for_libbpf_func(input: str, model_name: str) -> str:
+    llm = ChatOpenAI(model=model_name, temperature=0)
+    if should_use_zhipu(model_name):
+        messages = [{"role": "user", "content": input}]
+        return call_zhipu_tools_chat_completion(
+            messages,
+            model_name,
+            "run_libbpf_prog_with_func_call_define",
+            "Return only the libbpf C eBPF program text.",
+        )
+    api_base = os.getenv("OPENAI_API_BASE", "")
+    if api_base and "openai.com" not in api_base:
+        messages = [{"role": "user", "content": input}]
+        return call_tools_chat_completion(
+            messages,
+            model_name,
+            "run_libbpf_prog_with_func_call_define",
+            "Return only the libbpf C eBPF program text.",
+        )
+    chain = create_openai_fn_chain(
+        [run_libbpf_prog_with_func_call_define], llm, prompt_template, verbose=False
     )
     res = chain.run(input)
     print(res)

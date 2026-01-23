@@ -83,13 +83,19 @@ def call_chat_completion(
     api_base: Optional[str] = None,
     system_prompt: Optional[str] = None,
 ) -> str:
-    api_key = api_key or os.getenv("OPENAI_API_KEY")
-    api_base = normalize_api_base(api_base or os.getenv("OPENAI_API_BASE"))
+    api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("ZHIPU_API_KEY")
+    api_base = api_base or os.getenv("OPENAI_API_BASE") or os.getenv("ZHIPU_API_BASE")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required for chat completions.")
     if not api_base:
         raise RuntimeError("OPENAI_API_BASE is required for chat completions.")
-    url = f"{api_base}/chat/completions"
+    is_zhipu = model_name.startswith("glm-") or os.getenv("LLM_PROVIDER", "").lower() == "zhipu"
+    if is_zhipu:
+        api_base = api_base.rstrip("/")
+        url = f"{api_base}/chat/completions"
+    else:
+        api_base = normalize_api_base(api_base)
+        url = f"{api_base}/chat/completions"
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -99,6 +105,9 @@ def call_chat_completion(
         "temperature": 0,
         "messages": messages,
     }
+    if is_zhipu:
+        payload["thinking"] = {"type": "enabled"}
+        payload["stream"] = False
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -591,7 +600,7 @@ And fix the error.
 def run_3trails_with_human_feedback(
     prompt: str, hints: str, func: Callable[[str], str]
 ):
-    count = 3
+    count = 10
     res = func(prompt)
     while count > 0:
         data = json.loads(res)

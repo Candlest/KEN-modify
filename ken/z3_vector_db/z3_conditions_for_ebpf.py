@@ -1,7 +1,10 @@
 import json
+import json
 import os
 import re
 import time
+import urllib.request
+import urllib.error
 from langchain.chains.conversation.memory import ConversationBufferMemory
 from langchain.chat_models import ChatOpenAI
 from langchain.chains import ConversationChain
@@ -65,16 +68,85 @@ def run_bpftrace_prog_with_func_call_define(prog: str) -> str:
     """
     return f"{prog}"
 
+
+def get_chat_completion_url() -> str:
+    api_base = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+    api_base = api_base.rstrip("/")
+    if api_base.endswith("/chat/completions"):
+        return api_base
+    if api_base.endswith("/v1"):
+        return f"{api_base}/chat/completions"
+    return f"{api_base}/v1/chat/completions"
+
+
+def call_tools_chat_completion(messages, model_name: str) -> str:
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for tool calls")
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "run_bpftrace_prog_with_func_call_define",
+            "description": "Return the bpftrace program text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prog": {"type": "string"},
+                },
+                "required": ["prog"],
+            },
+        },
+    }
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "tools": [tool],
+        "tool_choice": {"type": "function", "function": {"name": "run_bpftrace_prog_with_func_call_define"}},
+        "temperature": 0,
+    }
+    request = urllib.request.Request(
+        get_chat_completion_url(),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    message = data.get("choices", [{}])[0].get("message", {})
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        arguments = tool_calls[0].get("function", {}).get("arguments", "{}")
+        args = json.loads(arguments)
+        return args.get("prog", "")
+    function_call = message.get("function_call")
+    if function_call:
+        arguments = function_call.get("arguments", "{}")
+        args = json.loads(arguments)
+        return args.get("prog", "")
+    return message.get("content", "")
+
 def run_gpt_for_bpftrace_func(input: str, model_name: str) -> str:
     # If we pass in a model explicitly, we need to make sure it supports the OpenAI function-calling API.
     llm = ChatOpenAI(model=model_name, temperature=0)
+    api_base = os.getenv("OPENAI_API_BASE", "")
+    if api_base and "openai.com" not in api_base:
+        messages = [{"role": "user", "content": input}]
+        return call_tools_chat_completion(messages, model_name)
     chain = create_openai_fn_chain(
         [run_bpftrace_prog_with_func_call_define], llm, prompt_template, verbose=False
     )
     res = chain.run(input)
     print(res)
-    prog = res["prog"]
-    return prog
+    if isinstance(res, dict) and "prog" in res:
+        return res["prog"]
+    if hasattr(res, "get"):
+        prog = res.get("prog")
+        return prog if prog is not None else str(res)
+    return str(res)
 
 
 def libbpf_prompt(statement, doc):

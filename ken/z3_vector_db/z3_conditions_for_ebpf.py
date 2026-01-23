@@ -103,6 +103,12 @@ def should_use_zhipu(model_name: str) -> bool:
     return bool(os.getenv("ZHIPU_API_BASE"))
 
 
+def get_zhipu_model_name(model_name: str) -> str:
+    if model_name.startswith("glm-"):
+        return model_name
+    return os.getenv("ZHIPU_MODEL", "glm-4.7")
+
+
 def call_tools_chat_completion(messages, model_name: str, tool_name: str, tool_description: str) -> str:
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
@@ -171,6 +177,7 @@ def call_zhipu_tools_chat_completion(messages, model_name: str, tool_name: str, 
     api_key = os.getenv("ZHIPU_API_KEY") or os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         raise RuntimeError("ZHIPU_API_KEY is required for Zhipu tool calls")
+    resolved_model = get_zhipu_model_name(model_name)
     tool = {
         "type": "function",
         "function": {
@@ -186,7 +193,7 @@ def call_zhipu_tools_chat_completion(messages, model_name: str, tool_name: str, 
         },
     }
     payload = {
-        "model": model_name,
+        "model": resolved_model,
         "messages": messages,
         "tools": [tool],
         "tool_choice": "auto",
@@ -212,6 +219,9 @@ def call_zhipu_tools_chat_completion(messages, model_name: str, tool_name: str, 
                 data = json.loads(response.read().decode("utf-8"))
             break
         except urllib.error.HTTPError as exc:
+            if exc.code == 400:
+                error_body = exc.read().decode("utf-8") if exc.fp else ""
+                raise RuntimeError(f"zhipu 400 error: {error_body}")
             if exc.code not in {429, 500, 502, 503, 504} or attempts >= 4:
                 raise
             retry_after = exc.headers.get("Retry-After") if exc.headers else None

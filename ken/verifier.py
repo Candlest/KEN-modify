@@ -6,6 +6,7 @@ import subprocess
 from .z3_vector_db.z3_conditions_for_ebpf import generate_response
 from .z3_vector_db.z3_conditions_for_ebpf import run_gpt_for_bpftrace_func
 from .z3_vector_db.z3_conditions_for_ebpf import run_gpt_for_libbpf_func
+from .z3_vector_db.z3_conditions_for_ebpf import run_planner_response
 from .z3_vector_db.z3_conditions_for_ebpf import run_code_llama_for_prog
 
 model = os.getenv("VERIFIER_MODEL", "gpt-4")
@@ -178,6 +179,21 @@ def extract_function_name(function: str) -> str:
     if match:
         return match.group(1)
     return trimmed
+
+
+def build_bpftrace_retry_hints(error: str) -> str:
+    hints = []
+    if "Unknown function: basename" in error:
+        hints.append("- bpftrace has no basename(); compare filename strings directly or use strcontains().")
+    if "Unknown identifier: 'ppid'" in error or "Unknown identifier: \"ppid\"" in error:
+        hints.append("- There is no builtin ppid. Use args->parent_pid for sched_process_fork or remove ppid.")
+    if "str() expects an integer or a pointer type" in error:
+        hints.append("- Do not call str() on string[16]; use args->child_comm directly.")
+    if "count() should be directly assigned to a map" in error or "count() requires no arguments" in error:
+        hints.append("- count() takes no args. Use @cnt = count(); then print @cnt, or print(count()) without args.")
+    if not hints:
+        return ""
+    return "\nCompiler hints based on errors:\n" + "\n".join(hints) + "\n"
 
 
 def gen_explaination_prompt():
@@ -494,6 +510,20 @@ def compile_libbpf_for_llvm(program: str):
 
 
 def retry_generate_bpftrace_program_for_compile(program: str, error: str) -> str:
+    hint_block = build_bpftrace_retry_hints(error)
+    planner_prompt = f"""
+You are a bpftrace fix planner. Given the program and compiler errors, output a short plan
+with 3-6 bullet points. No code.
+
+Program:
+{program}
+
+Errors:
+{error}
+"""
+    if model != "code-llama":
+        plan = run_planner_response(planner_prompt, model)
+        print("\n[bpftrace planner]\n", plan)
     retry_prompt = f"""
 The bpftrace program below:
 
@@ -507,11 +537,8 @@ or remove assume statement. only do mininium modification if required.
 We are going to use smt tools to verify the code, so please
 REMEMBER to keep the assume or assert statement to make sure it can be verified.
 If assume statement exists, do not change it to if or other statements.
-
-Compiler hints for bpftrace:
-- There is no builtin "ppid" variable. Use args->parent_pid for sched_process_fork, or remove ppid column.
-- Do not call str() on a value that is already a string (string[16]); use args->child_comm directly.
-- Keep bpftrace DSL syntax (BEGIN/END, tracepoint:..., kprobe:...).
+{hint_block}
+Keep bpftrace DSL syntax (BEGIN/END, tracepoint:..., kprobe:...).
 """
     print("\nretry_generate_bpftrace_program_for_compile: \n", retry_prompt)
     response = ""
@@ -523,6 +550,23 @@ Compiler hints for bpftrace:
 
 
 def retry_generate_bpftrace_program_for_sat(context: str, program: str, error: str) -> str:
+    hint_block = build_bpftrace_retry_hints(error)
+    planner_prompt = f"""
+You are a bpftrace fix planner. Given the program and SMT errors, output a short plan
+with 3-6 bullet points. No code.
+
+Context:
+{context}
+
+Program:
+{program}
+
+Errors:
+{error}
+"""
+    if model != "code-llama":
+        plan = run_planner_response(planner_prompt, model)
+        print("\n[bpftrace planner]\n", plan)
     retry_prompt = f"""
 The bpftrace program below is use to {context}
 
@@ -533,10 +577,8 @@ has sat error. if the error is related to the program itself, please fix it.
 {error}
 
 use function to run the bpftrace program without any assume or assert statments.
-
-Compiler hints for bpftrace:
-- There is no builtin "ppid" variable. Use args->parent_pid for sched_process_fork, or remove ppid column.
-- Do not call str() on a value that is already a string (string[16]); use args->child_comm directly.
+{hint_block}
+Keep bpftrace DSL syntax (BEGIN/END, tracepoint:..., kprobe:...).
 """
     print("\nretry_generate_bpftrace_program_for_sat\n", retry_prompt)
     response = ""

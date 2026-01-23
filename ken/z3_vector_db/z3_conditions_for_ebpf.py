@@ -94,6 +94,62 @@ def get_zhipu_chat_completion_url() -> str:
     return f"{api_base}/chat/completions"
 
 
+def call_chat_completion_basic(messages, model_name: str) -> str:
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for chat completions")
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": 0,
+        "max_tokens": 512,
+        "stream": False,
+    }
+    request = urllib.request.Request(
+        get_chat_completion_url(),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    message = data.get("choices", [{}])[0].get("message", {})
+    return message.get("content", "")
+
+
+def call_zhipu_chat_completion_basic(messages, model_name: str) -> str:
+    api_key = os.getenv("ZHIPU_API_KEY") or os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("ZHIPU_API_KEY is required for Zhipu chat completions")
+    resolved_model = get_zhipu_model_name(model_name)
+    payload = {
+        "model": resolved_model,
+        "messages": messages,
+        "temperature": 0,
+        "max_tokens": 512,
+        "stream": False,
+        "thinking": {"type": "enabled"},
+    }
+    request = urllib.request.Request(
+        get_zhipu_chat_completion_url(),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    message = data.get("choices", [{}])[0].get("message", {})
+    return message.get("content", "")
+
+
 def should_use_zhipu(model_name: str) -> bool:
     provider = os.getenv("LLM_PROVIDER", "").lower()
     if provider == "zhipu":
@@ -304,6 +360,16 @@ def run_gpt_for_libbpf_func(input: str, model_name: str) -> str:
         prog = res.get("prog")
         return prog if prog is not None else str(res)
     return str(res)
+
+
+def run_planner_response(input: str, model_name: str) -> str:
+    messages = [{"role": "user", "content": input}]
+    if should_use_zhipu(model_name):
+        return call_zhipu_chat_completion_basic(messages, model_name)
+    api_base = os.getenv("OPENAI_API_BASE", "")
+    if api_base and "openai.com" not in api_base:
+        return call_chat_completion_basic(messages, model_name)
+    return call_chat_completion_basic(messages, model_name)
 
 
 def libbpf_prompt(statement, doc):

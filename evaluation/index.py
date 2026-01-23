@@ -11,7 +11,7 @@ from chain import run_gpt_for_bpftrace_progs, run_code_llama_for_prog, run_gpt_f
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from ken.verifier import run_bpftrace_verifier
+from ken.verifier import run_bpftrace_verifier, run_libbpf_verifier
 
 app = Flask(__name__)
 CORS(app)
@@ -83,6 +83,9 @@ def handler(user_query, additional_contex, bpf_type, model, api_key, api_base, e
             result = run_code_llama_for_prog(llm_input)
         else:
             result = run_gpt_for_libbpf_progs(llm_input, model, api_key=api_key, api_base=api_base)
+        if enable_verifier:
+            verifier_context = additional_contex or user_query
+            result = run_libbpf_verifier(verifier_context, result)
     else:
         return json.dumps({"error": "Invalid bpfType"})
     # llm = get_llm(model)

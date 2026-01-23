@@ -1,7 +1,7 @@
 # https://github.com/shilch/seccomp/blob/master/extract_syscalls.sh
 from typing import TypedDict
 from z3 import *
-import os, re, json, shutil
+import os, re, json, shutil, shlex
 import subprocess
 from .z3_vector_db.z3_conditions_for_ebpf import generate_response
 from .z3_vector_db.z3_conditions_for_ebpf import run_gpt_for_bpftrace_func
@@ -37,10 +37,83 @@ def get_z3_bin() -> str:
     return "z3"
 
 
+def get_clang_bin() -> str:
+    clang_bin = os.getenv("CLANG_BIN")
+    if clang_bin:
+        return clang_bin
+    system_clang = shutil.which("clang")
+    if system_clang:
+        return system_clang
+    return "clang"
+
+
+def get_libbpf_include_dirs() -> list:
+    include_dirs = []
+    libbpf_include_dir = os.getenv("LIBBPF_INCLUDE_DIR")
+    if libbpf_include_dir:
+        include_dirs.append(libbpf_include_dir)
+    include_dirs.extend(["/usr/include", "/usr/include/bpf"])
+    vmlinux_path = os.getenv("VMLINUX_H_PATH")
+    if vmlinux_path:
+        include_dirs.append(os.path.dirname(vmlinux_path))
+    else:
+        for candidate in [
+            os.path.join(os.getcwd(), "vmlinux.h"),
+            "/usr/include/vmlinux.h",
+            "/usr/include/bpf/vmlinux.h",
+        ]:
+            if os.path.exists(candidate):
+                include_dirs.append(os.path.dirname(candidate))
+                break
+    unique_dirs = []
+    for path in include_dirs:
+        if path and path not in unique_dirs and os.path.isdir(path):
+            unique_dirs.append(path)
+    return unique_dirs
+
+
 def ensure_tmp_dir() -> str:
     tmp_dir = os.path.abspath("tmp")
     os.makedirs(tmp_dir, exist_ok=True)
     return tmp_dir
+
+
+_libbpf_helper_names = None
+
+
+def get_bpf_target_arch() -> str:
+    return os.getenv("BPF_TARGET_ARCH", "x86")
+
+
+def load_libbpf_helper_names() -> set:
+    global _libbpf_helper_names
+    if _libbpf_helper_names is not None:
+        return _libbpf_helper_names
+    helper_names = set()
+    data = json.load(open("z3_vector_db/data/libbpf_z3.json", "r"))
+    if isinstance(data, list):
+        for entry in data:
+            if isinstance(entry, dict):
+                helper_names.update(entry.keys())
+    elif isinstance(data, dict):
+        helper_names.update(data.keys())
+    _libbpf_helper_names = helper_names
+    return helper_names
+
+
+def add_libbpf_verifier_helpers(program: str) -> str:
+    if "__SEA_assume" in program or "__SEA_assert" in program:
+        return program
+    helper_block = """
+#ifndef __SEA_VERIFIER_HELPERS
+#define __SEA_VERIFIER_HELPERS
+extern void __SEA_assume(int);
+extern void __SEA_assert(int);
+#define assume(x) __SEA_assume((x))
+#define sassert(x) __SEA_assert((x))
+#endif
+"""
+    return helper_block + "\n" + program
 
 # prompt what should be changed
 def replace_bpftrace_sassert_func_to_error(program: str):
@@ -82,6 +155,16 @@ def replace_line(program, line, content):
         return "\n".join(lines)
     else:
         return program
+
+
+def extract_function_name(function: str) -> str:
+    trimmed = function.strip()
+    if trimmed.startswith(("kprobe:", "kretprobe:", "tracepoint:")):
+        return trimmed.split()[0].rstrip("{")
+    match = re.match(r"([A-Za-z_][\w]*)\s*\(", trimmed)
+    if match:
+        return match.group(1)
+    return trimmed
 
 
 def gen_explaination_prompt():
@@ -143,6 +226,21 @@ def get_bpf_prompt(
     return program
 
 
+def get_libbpf_prompt(
+    context: str,
+    program: str,
+    line: str,
+    linenumber: int,
+    file: str = "libbpf_z3.json",
+) -> object:
+    """
+    prompt the current codedb and return the pre condition and post condition json
+    """
+    prompted_pre_post = bpf_prompt(context, program, line, linenumber, file)
+    program = program.replace(line.strip(), prompted_pre_post)
+    return program
+
+
 def bpf_prompt(
     context: str,
     program: str,
@@ -157,10 +255,15 @@ def bpf_prompt(
 
     # has db
     json_template = ""
+    function_name = extract_function_name(function)
     json_ = json.load(open("z3_vector_db/data/" + file, "r"))
-    for li in list(json_[0].keys()):
-        if li == function:
-            json_template = json_[li]
+    if isinstance(json_, list):
+        for entry in json_:
+            if isinstance(entry, dict) and function_name in entry:
+                json_template = entry[function_name]
+                break
+    elif isinstance(json_, dict):
+        json_template = json_.get(function_name, "")
 
     prompt = (
         f"""
@@ -172,7 +275,7 @@ def bpf_prompt(
     information on this line considering the context. 
     """
         + f"Here's the broader constraints of this function: {json_template}"
-        if json_template != 0
+        if json_template
         else ""
         f"""
     Can you generate the refined constraints in following C format:
@@ -190,8 +293,11 @@ def bpf_prompt(
     print("\nbpf_prompt responses\n", response)
     code_pattern = r"```c\n(.*?)\n```"
     c_code = re.findall(code_pattern, response, re.DOTALL)
-    if not c_code or c_code.__contains__("assume") or c_code.__contains__("sassert"):
-        c_code = function
+    if not c_code:
+        return function
+    c_code = c_code[0]
+    if "assume" not in c_code or "sassert" not in c_code:
+        return function
 
     print(c_code, "\n\n")
     return c_code.replace(";\n", ";")
@@ -238,10 +344,15 @@ def kprobe_prompt(
 
     # has db
     json_template = ""
+    function_name = extract_function_name(function)
     json_ = json.load(open("z3_vector_db/data/" + file, "r"))
-    for li in list(json_[0].keys()):
-        if li == function:
-            json_template = json_[0][li]
+    if isinstance(json_, list):
+        for entry in json_:
+            if isinstance(entry, dict) and function_name in entry:
+                json_template = entry[function_name]
+                break
+    elif isinstance(json_, dict):
+        json_template = json_.get(function_name, "")
     program_name = "bpftrace" if file.__contains__("bpftrace") else "libbpf"
     prompt = (
         f"""
@@ -254,7 +365,7 @@ def kprobe_prompt(
     """
         + (
             f"Here's the broader constraints of this function: {json_template['description']} with pre condition {', '.join(map(lambda kv: f'{kv[0]} should be {kv[1]}', json_template['pre'].items()))}"
-            if json_template != ""
+            if isinstance(json_template, dict)
             else ""
         )
         + f"""
@@ -340,6 +451,35 @@ def compile_bpftrace_for_llvm(program: str):
     return var
 
 
+def compile_libbpf_for_llvm(program: str):
+    tmp_dir = ensure_tmp_dir()
+    c_path = os.path.join(tmp_dir, "tmp.bpf.c")
+    ll_path = os.path.join(tmp_dir, "tmp.libbpf.ll")
+    with open(c_path, "w") as f:
+        f.write(program)
+    clang_bin = get_clang_bin()
+    cmd = [
+        clang_bin,
+        "-O2",
+        "-g",
+        "-target",
+        "bpf",
+        "-emit-llvm",
+        "-S",
+        c_path,
+        "-o",
+        ll_path,
+        f"-D__TARGET_ARCH_{get_bpf_target_arch()}",
+    ]
+    for include_dir in get_libbpf_include_dirs():
+        cmd.extend(["-I", include_dir])
+    extra_flags = os.getenv("LIBBPF_CFLAGS", "")
+    if extra_flags:
+        cmd.extend(shlex.split(extra_flags))
+    var = subprocess.run(cmd, text=True, capture_output=True)
+    return var, ll_path
+
+
 def retry_generate_bpftrace_program_for_compile(program: str, error: str) -> str:
     retry_prompt = f"""
 The bpftrace program below:
@@ -385,6 +525,48 @@ use function to run the bpftrace program without any assume or assert statments.
     return response
 
 
+def retry_generate_libbpf_program_for_compile(program: str, error: str) -> str:
+    retry_prompt = f"""
+The libbpf C program below:
+
+{program}
+
+has compile error, please fix it without change its behavior or hook location.
+Only do minimum modification if required. Keep assume or sassert statements
+if they exist.
+
+{error}
+"""
+    print("\nretry_generate_libbpf_program_for_compile: \n", retry_prompt)
+    response = ""
+    if model == "code-llama":
+        response = run_code_llama_for_prog(retry_prompt)
+    else:
+        response = run_gpt_for_bpftrace_func(retry_prompt, model)
+    return response
+
+
+def retry_generate_libbpf_program_for_sat(context: str, program: str, error: str) -> str:
+    retry_prompt = f"""
+The libbpf C program below is used to {context}
+
+{program}
+
+has SAT error. If the error is related to the program itself, please fix it.
+
+{error}
+
+Keep the program behavior and do not remove assume or sassert statements.
+"""
+    print("\nretry_generate_libbpf_program_for_sat\n", retry_prompt)
+    response = ""
+    if model == "code-llama":
+        response = run_code_llama_for_prog(retry_prompt)
+    else:
+        response = run_gpt_for_bpftrace_func(retry_prompt, model)
+    return response
+
+
 def compile_bpftrace_with_retry(context, program, retry_depth=3):
     print("compile_bpftrace_with_retry")
     var = compile_bpftrace_for_llvm(program)
@@ -407,6 +589,32 @@ def compile_bpftrace_with_retry(context, program, retry_depth=3):
         stdout = var.stdout
         stdout = stdout.replace('@__SEA_assume(i1 %0)', '@__SEA_assume(i64 %0)')
         return stdout, program
+
+
+def compile_libbpf_with_retry(context, program, retry_depth=3):
+    print("compile_libbpf_with_retry")
+    program_with_helpers = add_libbpf_verifier_helpers(program)
+    var, ll_path = compile_libbpf_for_llvm(program_with_helpers)
+    print("clang 输出：", var)
+    if var.returncode != 0:
+        print("\nvar.stderr: ", var.stderr)
+        print("\nretry left: ", retry_depth)
+        if retry_depth <= 0:
+            print("\nfailed to compile libbpf program with retry.\n")
+            return "", program
+        program = retry_generate_libbpf_program_for_compile(program, var.stderr)
+        print("\nregenerated program:\n", program)
+        return compile_libbpf_with_retry(
+            context,
+            program,
+            retry_depth - 1,
+        )
+    ll_ir = ""
+    if os.path.exists(ll_path):
+        with open(ll_path, "r") as f:
+            ll_ir = f.read()
+    ll_ir = ll_ir.replace('@__SEA_assume(i1 %0)', '@__SEA_assume(i64 %0)')
+    return ll_ir, program
 
 
 def parse_bpftrace_program(context: str, program: str):
@@ -536,54 +744,29 @@ def parse_libbpf_program(context: str, program: str):
     Returns:
 
     """
-    function_matches = re.findall(r"\w+\([^)]*\)", program)
-    print(function_matches)
-    print(function_matches)
-    uprobe_matches = re.findall(r"uretprobe:.+", program)
-    kprobe_matches = re.findall(r"kprobe:.+", program)
-    kretprobe_matches = re.findall(r"kretprobe:.+", program)
-    print(kprobe_matches)
-
-    tracepoint_matches = re.findall(r"tracepoint:.+", program)
-    # try:
+    helper_names = load_libbpf_helper_names()
     for linenumber, line in enumerate(program.splitlines()):
         print(linenumber, line)
         if linenumber == 0 or line.strip() == "":
             continue
-        for match in function_matches:
-            if match.startswith(line.strip()):
-                # try:
-                print(line, "line", match)
-                program_tmp = program
-                program = get_bpf_prompt(context, program, line, linenumber)
-                program_ll, _ = compile_bpftrace_with_retry(
-                    context, program
-                )
-                res = verify_z3(program_ll)
-                # regenerate the program if contains error:
-                if res != "":
-                    program = retry_generate_bpftrace_program_for_sat(context, program_tmp, res)
-                else:
-                    # restore the original program
-                    program = program_tmp
-        for match in kprobe_matches:
-            if match.startswith(line.strip()):
-                program_tmp = program
-                program = get_kprobe_prompt(context, program, line, linenumber)
-                print("program\n", program)
-                program_ll, _ = compile_bpftrace_with_retry(
-                    context, program
-                )
-                parts = program_ll.split("ModuleID")
-                substring = "; ModuleID " + parts[1].strip()
-                res = verify_z3(substring)
-                # regenerate the program if contains error:
-                if res != "":
-                    program = retry_generate_bpftrace_program_for_sat(context, program_tmp, res)
-                else:
-                    program = program_tmp
-    # except:
-    #     pass
+        match = re.search(r"\b([A-Za-z_][\w]*)\s*\(", line)
+        if not match:
+            continue
+        function_name = match.group(1)
+        if function_name not in helper_names:
+            continue
+        program_tmp = program
+        program = get_libbpf_prompt(context, program, line, linenumber)
+        program_ll, _ = compile_libbpf_with_retry(
+            context, program
+        )
+        if not program_ll:
+            continue
+        res = verify_z3(program_ll)
+        if res != "":
+            program = retry_generate_libbpf_program_for_sat(context, program_tmp, res)
+        else:
+            program = program_tmp
     return program
 
 # 入口函数
@@ -605,6 +788,20 @@ def run_bpftrace_verifier(context: str, program: str) -> str:
     var = compile_bpftrace_for_llvm(res)
     if var.returncode != 0:
         # test for correct compile program
+        return new_program
+    return res
+
+
+def run_libbpf_verifier(context: str, program: str) -> str:
+    _, new_program = compile_libbpf_with_retry(context, program)
+    test_new, _ = compile_libbpf_for_llvm(add_libbpf_verifier_helpers(new_program))
+    if test_new.returncode != 0:
+        return program
+    res = parse_libbpf_program(context, new_program)
+    if not res:
+        return program
+    test_res, _ = compile_libbpf_for_llvm(add_libbpf_verifier_helpers(res))
+    if test_res.returncode != 0:
         return new_program
     return res
 
@@ -652,7 +849,7 @@ int BPF_KPROBE(kprobe__tcp_v6_syn_recv_sock, struct sock *sk)
 
 char LICENSE[] SEC("license") = "GPL";
 """
-    parse_libbpf_program(context, program)
+    run_libbpf_verifier(context, program)
 
 
 class CommandResult(TypedDict):

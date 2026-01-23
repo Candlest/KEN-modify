@@ -55,6 +55,41 @@ END
 
 保存为 `*.bt` 文件，使用 `bpftrace` 执行。
 
+### libbpf 验证回路
+
+默认情况下，`bpfType=libbpf` 也会走验证回路（可通过请求参数 `enableVerifier=false` 关闭）。
+
+基础环境变量（第三方中转 + 验证）：
+
+```bash
+export OPENAI_API_BASE="https://yunwu.ai/v1"
+export OPENAI_API_KEY="YOUR_KEY"
+export VERIFIER_MODEL="gpt-5-mini"
+```
+
+libbpf 编译依赖与可选配置：
+
+```bash
+export CLANG_BIN="/usr/bin/clang"
+export LIBBPF_INCLUDE_DIR="/usr/include/bpf"
+export VMLINUX_H_PATH="/usr/include/bpf/vmlinux.h"
+export BPF_TARGET_ARCH="x86"
+export LIBBPF_CFLAGS="-I/usr/include"
+```
+
+调用示例：
+
+```bash
+curl -X POST http://localhost:4000/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userInput": "监控 tcp_v4_syn_recv_sock 并统计 SYN backlog",
+    "bpfType": "libbpf",
+    "model": "gpt-5-mini",
+    "enableVerifier": true
+  }'
+```
+
 ---
 README 原文
 

@@ -78,6 +78,11 @@ def ensure_tmp_dir() -> str:
     return tmp_dir
 
 
+def get_data_file(filename: str) -> str:
+    base_dir = os.path.join(os.path.dirname(__file__), "z3_vector_db", "data")
+    return os.path.join(base_dir, filename)
+
+
 _libbpf_helper_names = None
 
 
@@ -90,7 +95,7 @@ def load_libbpf_helper_names() -> set:
     if _libbpf_helper_names is not None:
         return _libbpf_helper_names
     helper_names = set()
-    data = json.load(open("z3_vector_db/data/libbpf_z3.json", "r"))
+    data = json.load(open(get_data_file("libbpf_z3.json"), "r"))
     if isinstance(data, list):
         for entry in data:
             if isinstance(entry, dict):
@@ -180,7 +185,7 @@ def get_argument_prompt(
     function = function.replace("kprobe:", "").replace("kretprobe", "")
     function_def = ""
     with open(
-        "z3_vector_db/data/bpf_kprobe_def_format.json",
+        get_data_file("bpf_kprobe_def_format.json"),
         "r",
         encoding="utf-8",
     ) as file:
@@ -256,7 +261,7 @@ def bpf_prompt(
     # has db
     json_template = ""
     function_name = extract_function_name(function)
-    json_ = json.load(open("z3_vector_db/data/" + file, "r"))
+    json_ = json.load(open(get_data_file(file), "r"))
     if isinstance(json_, list):
         for entry in json_:
             if isinstance(entry, dict) and function_name in entry:
@@ -345,7 +350,7 @@ def kprobe_prompt(
     # has db
     json_template = ""
     function_name = extract_function_name(function)
-    json_ = json.load(open("z3_vector_db/data/" + file, "r"))
+    json_ = json.load(open(get_data_file(file), "r"))
     if isinstance(json_, list):
         for entry in json_:
             if isinstance(entry, dict) and function_name in entry:

@@ -16,23 +16,41 @@ from ken.verifier import run_bpftrace_verifier, run_libbpf_verifier
 app = Flask(__name__)
 CORS(app)
 
-def prompt(user_query):
+def prompt_bpftrace(user_query, additional_context=""):
     complex_example = get_top_n_example_from_bpftrace_vec_db(user_query, 3)
-    PROMPT = f"""
-    Please create a BPFTrace program that accomplishes the following task: ${user_query}
-    The program should be syntactically correct and ready for execution. 
+    context_block = f"Additional context: {additional_context}\n" if additional_context else ""
+    prompt_text = f"""
+    Please create a BPFTrace program that accomplishes the following task: {user_query}
+    {context_block}
+    The program should be syntactically correct and ready for execution.
     You can assume that the required BPFTrace probes and functions are available.
     Below are some simple examples of bpftrace usage:
     {simple_examples}
     Some more complex examples:
     {complex_example}
     GENERATE BPFTRACE EXECUTABLE CODE THAT SHOULD BE READY TO RUN WITHOUT ANY ADDITIONAL MODIFICATIONS!!!
-    The code should be self-contained and able to run directly with BPFTrace. 
-    The output should appear at the beginning of the response. 
+    The code should be self-contained and able to run directly with BPFTrace.
+    The output should appear at the beginning of the response.
     There's no need to include execution instructions or explanations. Just provide the BPFTrace code.
     Do not start with "\`\`\`bpftrace".
     """
-    return PROMPT
+    return prompt_text
+
+
+def prompt_libbpf(user_query, additional_context=""):
+    context_block = f"Additional context: {additional_context}\n" if additional_context else ""
+    prompt_text = f"""
+    Please create a libbpf eBPF program in C that accomplishes the following task: {user_query}
+    {context_block}
+    Requirements:
+    - Output ONLY kernel eBPF C code (no userspace program).
+    - Use libbpf CO-RE style with SEC("kprobe/..."), SEC("tracepoint/..."), or similar sections.
+    - Include required headers (vmlinux.h, bpf_helpers.h, bpf_tracing.h, bpf_core_read.h).
+    - Define BPF maps using libbpf map syntax.
+    - Do NOT use bpftrace DSL keywords like BEGIN, END, interval, or kprobe: syntax.
+    - No explanations, no Markdown fences. Return only the C code.
+    """
+    return prompt_text
 
 def get_llm(model_name):
     print(model_name)
@@ -69,8 +87,8 @@ def handler(user_query, additional_contex, bpf_type, model, api_key, api_base, e
     if api_base:
         os.environ["OPENAI_API_BASE"] = api_base
     
-    llm_input = prompt(user_query)
     if bpf_type == "bpftrace":
+        llm_input = prompt_bpftrace(user_query, additional_contex)
         if model == "code-llama":
             result = run_code_llama_for_prog(llm_input)
         else:
@@ -79,6 +97,7 @@ def handler(user_query, additional_contex, bpf_type, model, api_key, api_base, e
             verifier_context = additional_contex or user_query
             result = run_bpftrace_verifier(verifier_context, result)
     elif bpf_type == "libbpf":
+        llm_input = prompt_libbpf(user_query, additional_contex)
         if model == "code-llama":
             result = run_code_llama_for_prog(llm_input)
         else:

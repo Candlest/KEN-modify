@@ -165,7 +165,13 @@ def get_zhipu_model_name(model_name: str) -> str:
     return os.getenv("ZHIPU_MODEL", "glm-4.7")
 
 
-def call_tools_chat_completion(messages, model_name: str, tool_name: str, tool_description: str) -> str:
+def call_tools_chat_completion(
+    messages,
+    model_name: str,
+    tool_name: str,
+    tool_description: str,
+    temperature: float = 0,
+) -> str:
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required for tool calls")
@@ -188,7 +194,7 @@ def call_tools_chat_completion(messages, model_name: str, tool_name: str, tool_d
         "messages": messages,
         "tools": [tool],
         "tool_choice": {"type": "function", "function": {"name": tool_name}},
-        "temperature": 0,
+        "temperature": temperature,
         "max_tokens": 2048,
         "stream": False,
     }
@@ -229,7 +235,13 @@ def call_tools_chat_completion(messages, model_name: str, tool_name: str, tool_d
     return message.get("content", "")
 
 
-def call_zhipu_tools_chat_completion(messages, model_name: str, tool_name: str, tool_description: str) -> str:
+def call_zhipu_tools_chat_completion(
+    messages,
+    model_name: str,
+    tool_name: str,
+    tool_description: str,
+    temperature: float = 0,
+) -> str:
     api_key = os.getenv("ZHIPU_API_KEY") or os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         raise RuntimeError("ZHIPU_API_KEY is required for Zhipu tool calls")
@@ -253,7 +265,7 @@ def call_zhipu_tools_chat_completion(messages, model_name: str, tool_name: str, 
         "messages": messages,
         "tools": [tool],
         "tool_choice": "auto",
-        "temperature": 0,
+        "temperature": temperature,
         "max_tokens": 2048,
         "stream": False,
         "thinking": {"type": "enabled"},
@@ -297,7 +309,7 @@ def call_zhipu_tools_chat_completion(messages, model_name: str, tool_name: str, 
         return args.get("prog", "")
     return message.get("content", "")
 
-def run_gpt_for_bpftrace_func(input: str, model_name: str) -> str:
+def run_gpt_for_bpftrace_func(input: str, model_name: str, temperature: float = 0) -> str:
     # If we pass in a model explicitly, we need to make sure it supports the OpenAI function-calling API.
     llm = ChatOpenAI(model=model_name, temperature=0)
     if should_use_zhipu(model_name):
@@ -307,6 +319,7 @@ def run_gpt_for_bpftrace_func(input: str, model_name: str) -> str:
             model_name,
             "run_bpftrace_prog_with_func_call_define",
             "Return only the bpftrace program text.",
+            temperature,
         )
     api_base = os.getenv("OPENAI_API_BASE", "")
     if api_base and "openai.com" not in api_base:
@@ -316,6 +329,7 @@ def run_gpt_for_bpftrace_func(input: str, model_name: str) -> str:
             model_name,
             "run_bpftrace_prog_with_func_call_define",
             "Return only the bpftrace program text.",
+            temperature,
         )
     chain = create_openai_fn_chain(
         [run_bpftrace_prog_with_func_call_define], llm, prompt_template, verbose=False
@@ -330,7 +344,7 @@ def run_gpt_for_bpftrace_func(input: str, model_name: str) -> str:
     return str(res)
 
 
-def run_gpt_for_libbpf_func(input: str, model_name: str) -> str:
+def run_gpt_for_libbpf_func(input: str, model_name: str, temperature: float = 0) -> str:
     llm = ChatOpenAI(model=model_name, temperature=0)
     if should_use_zhipu(model_name):
         messages = [{"role": "user", "content": input}]
@@ -339,6 +353,7 @@ def run_gpt_for_libbpf_func(input: str, model_name: str) -> str:
             model_name,
             "run_libbpf_prog_with_func_call_define",
             "Return only the libbpf C eBPF program text.",
+            temperature,
         )
     api_base = os.getenv("OPENAI_API_BASE", "")
     if api_base and "openai.com" not in api_base:
@@ -348,6 +363,7 @@ def run_gpt_for_libbpf_func(input: str, model_name: str) -> str:
             model_name,
             "run_libbpf_prog_with_func_call_define",
             "Return only the libbpf C eBPF program text.",
+            temperature,
         )
     chain = create_openai_fn_chain(
         [run_libbpf_prog_with_func_call_define], llm, prompt_template, verbose=False

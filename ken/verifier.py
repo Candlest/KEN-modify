@@ -545,7 +545,17 @@ Keep bpftrace DSL syntax (BEGIN/END, tracepoint:..., kprobe:...).
     if model == "code-llama":
         response = run_code_llama_for_prog(retry_prompt)
     else:
-        response = run_gpt_for_bpftrace_func(retry_prompt, model)
+        retry_temp = float(os.getenv("BPFTRACE_RETRY_TEMPERATURE", "0.7"))
+        retry_attempts = int(os.getenv("BPFTRACE_RETRY_ATTEMPTS", "2"))
+        original = program.strip()
+        for attempt in range(retry_attempts):
+            temperature = retry_temp + (0.2 * attempt)
+            candidate = run_gpt_for_bpftrace_func(retry_prompt, model, temperature=temperature)
+            if candidate and candidate.strip() and candidate.strip() != original:
+                response = candidate
+                break
+        if not response:
+            response = run_gpt_for_bpftrace_func(retry_prompt, model, temperature=retry_temp)
     return response
 
 
@@ -585,7 +595,17 @@ Keep bpftrace DSL syntax (BEGIN/END, tracepoint:..., kprobe:...).
     if model == "code-llama":
         response = run_code_llama_for_prog(retry_prompt)
     else:
-        response = run_gpt_for_bpftrace_func(retry_prompt, model)
+        retry_temp = float(os.getenv("BPFTRACE_RETRY_TEMPERATURE", "0.7"))
+        retry_attempts = int(os.getenv("BPFTRACE_RETRY_ATTEMPTS", "2"))
+        original = program.strip()
+        for attempt in range(retry_attempts):
+            temperature = retry_temp + (0.2 * attempt)
+            candidate = run_gpt_for_bpftrace_func(retry_prompt, model, temperature=temperature)
+            if candidate and candidate.strip() and candidate.strip() != original:
+                response = candidate
+                break
+        if not response:
+            response = run_gpt_for_bpftrace_func(retry_prompt, model, temperature=retry_temp)
     return response
 
 
@@ -606,7 +626,17 @@ if they exist.
     if model == "code-llama":
         response = run_code_llama_for_prog(retry_prompt)
     else:
-        response = run_gpt_for_libbpf_func(retry_prompt, model)
+        retry_temp = float(os.getenv("LIBBPF_RETRY_TEMPERATURE", "0.7"))
+        retry_attempts = int(os.getenv("LIBBPF_RETRY_ATTEMPTS", "2"))
+        original = program.strip()
+        for attempt in range(retry_attempts):
+            temperature = retry_temp + (0.2 * attempt)
+            candidate = run_gpt_for_libbpf_func(retry_prompt, model, temperature=temperature)
+            if candidate and candidate.strip() and candidate.strip() != original:
+                response = candidate
+                break
+        if not response:
+            response = run_gpt_for_libbpf_func(retry_prompt, model, temperature=retry_temp)
     return response
 
 
@@ -627,7 +657,17 @@ Keep the program behavior and do not remove assume or sassert statements.
     if model == "code-llama":
         response = run_code_llama_for_prog(retry_prompt)
     else:
-        response = run_gpt_for_libbpf_func(retry_prompt, model)
+        retry_temp = float(os.getenv("LIBBPF_RETRY_TEMPERATURE", "0.7"))
+        retry_attempts = int(os.getenv("LIBBPF_RETRY_ATTEMPTS", "2"))
+        original = program.strip()
+        for attempt in range(retry_attempts):
+            temperature = retry_temp + (0.2 * attempt)
+            candidate = run_gpt_for_libbpf_func(retry_prompt, model, temperature=temperature)
+            if candidate and candidate.strip() and candidate.strip() != original:
+                response = candidate
+                break
+        if not response:
+            response = run_gpt_for_libbpf_func(retry_prompt, model, temperature=retry_temp)
     return response
 
 

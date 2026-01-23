@@ -7,7 +7,7 @@ from .z3_vector_db.z3_conditions_for_ebpf import generate_response
 from .z3_vector_db.z3_conditions_for_ebpf import run_gpt_for_bpftrace_func
 from .z3_vector_db.z3_conditions_for_ebpf import run_code_llama_for_prog
 
-model = "gpt-4"  # can be "code-llama"
+model = os.getenv("VERIFIER_MODEL", "gpt-4")
 
 
 def get_sea_bin() -> str:
@@ -357,13 +357,10 @@ If assume statement exists, do not change it to if or other statements.
 """
     print("\nretry_generate_bpftrace_program_for_compile: \n", retry_prompt)
     response = ""
-    if model == "gpt-4":
-       response = run_gpt_for_bpftrace_func(retry_prompt, "gpt-4")
-    elif model == "code-llama":
+    if model == "code-llama":
         response = run_code_llama_for_prog(retry_prompt)
     else:
-        print("invalid model name")
-        exit(1)
+        response = run_gpt_for_bpftrace_func(retry_prompt, model)
     return response
 
 
@@ -381,13 +378,10 @@ use function to run the bpftrace program without any assume or assert statments.
 """
     print("\nretry_generate_bpftrace_program_for_sat\n", retry_prompt)
     response = ""
-    if model == "gpt-4":
-       response = run_gpt_for_bpftrace_func(retry_prompt, "gpt-4")
-    elif model == "code-llama":
+    if model == "code-llama":
         response = run_code_llama_for_prog(retry_prompt)
     else:
-        print("invalid model name")
-        exit(1)
+        response = run_gpt_for_bpftrace_func(retry_prompt, model)
     return response
 
 

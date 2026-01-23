@@ -103,6 +103,8 @@ def call_tools_chat_completion(messages, model_name: str) -> str:
         "tools": [tool],
         "tool_choice": {"type": "function", "function": {"name": "run_bpftrace_prog_with_func_call_define"}},
         "temperature": 0,
+        "max_tokens": 2048,
+        "stream": False,
     }
     request = urllib.request.Request(
         get_chat_completion_url(),
@@ -114,8 +116,19 @@ def call_tools_chat_completion(messages, model_name: str) -> str:
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        data = json.loads(response.read().decode("utf-8"))
+    attempts = 0
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {429, 500, 502, 503, 504} or attempts >= 4:
+                raise
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            delay = float(retry_after) if retry_after else 1.5 * (2 ** attempts)
+            time.sleep(delay)
+            attempts += 1
     message = data.get("choices", [{}])[0].get("message", {})
     tool_calls = message.get("tool_calls")
     if tool_calls:
